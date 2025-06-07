@@ -1,189 +1,310 @@
-# StockBot with Proxy Manager
+# StockBot with Advanced Proxy Management
 
-A web scraping bot with separate proxy management for extracting data from Popmart product pages using AWS Fargate SOCKS5 proxies.
+A sophisticated web scraping system for monitoring Popmart product stock with AWS Fargate SOCKS5 proxies, live web dashboard, and intelligent priority queueing.
 
-## Architecture
+## 🌟 Key Features
 
-The system is now separated into two main components:
+### 🚀 **Multi-Product Monitoring**
+- Monitor multiple products simultaneously with interleaved URL processing
+- Fair priority distribution across all products
+- Individual TSV data files per product
 
-1. **Proxy Manager**: Stateful proxy management with persistent storage
-2. **StockBot**: Web scraping bot that uses existing proxies
+### ⚡ **Smart Priority Queue System**
+- **3-tier priority levels**: HIGH (reserved + in-stock), MEDIUM (reserved), LOW (in-stock)
+- **Line-cutting algorithm**: Higher priority URLs can jump ahead in queue
+- **Time-based throttling**: 30-second minimum intervals between priority checks
+- **Automatic detection**: Monitors for `state: 2` (reserved) and `state: 0` with `box_no` (in-stock)
 
-## Setup
+### 🔄 **Persistent Page Workers**
+- Dedicated browser pages with assigned proxies
+- No page creation/destruction overhead
+- Optimal concurrency: `min(urlCount, proxyCount)`
+- 500ms delay between URL processing per worker
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+### 📊 **Live Web Dashboard**
+- Real-time stock monitoring at `http://localhost:3000`
+- Server-Sent Events (SSE) for instant updates
+- **Visual indicators**:
+  - Green glow/border for items with actual stock
+  - Color-coded state dots: Green (available), Grey (reserved), Orange (other)
+  - Different colors for out-of-stock items (lighter grey for empty slots)
+- **Product sections** with seen/unseen URL counts
+- **Copy in-stock URLs** functionality
 
-2. Configure AWS credentials (ensure you have proper AWS access for ECS, EC2, IAM, and CloudWatch Logs)
+### 🛡️ **Enterprise-Grade Proxy Security**
+- Stateful proxy management with persistent storage
+- WebRTC leak prevention with multiple browser flags
+- HTTP header sanitization
+- Direct IP connection blocking
+- Fake Xfinity IP header injection
 
-## Proxy Management
+## 🏗️ Architecture
 
-### CLI Commands
+```
+┌─────────────────┐    ┌──────────────────┐    ┌────────────────┐
+│   Proxy CLI     │    │    StockBot      │    │  Web Dashboard │
+│                 │    │                  │    │                │
+│ ┌─────────────┐ │    │ ┌──────────────┐ │    │ ┌────────────┐ │
+│ │   Create    │ │    │ │ PriorityQueue│ │    │ │    SSE     │ │
+│ │   List      │ │────┤ │ PageWorkers  │ ├────┤ │ Real-time  │ │
+│ │   Monitor   │ │    │ │ DataPersist  │ │    │ │ Updates    │ │
+│ │   Teardown  │ │    │ └──────────────┘ │    │ └────────────┘ │
+│ └─────────────┘ │    └──────────────────┘    └────────────────┘
+└─────────────────┘             │                        │
+         │                      │                        │
+         ▼                      ▼                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     AWS Fargate SOCKS5 Proxies                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
+│  │   Proxy 1   │  │   Proxy 2   │  │   Proxy N   │            │
+│  │ us-west-1   │  │ us-east-2   │  │ ca-central  │    ...     │
+│  └─────────────┘  └─────────────┘  └─────────────┘            │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-Use the proxy CLI to manage your proxy pool:
+## 🚀 Quick Start
+
+### 1. Installation
+```bash
+npm install
+```
+
+### 2. AWS Configuration
+Ensure you have AWS credentials configured with permissions for:
+- ECS (Fargate)
+- EC2 (Security Groups, Network Interfaces)
+- IAM (Role creation)
+- CloudWatch Logs
+
+### 3. Create Proxies
+```bash
+# Create 5 proxies across different regions
+node proxy-cli.js create 5
+
+# Verify proxies are active
+node proxy-cli.js status
+```
+
+### 4. Monitor Products
+```bash
+# Single product
+node stockbot.js https://www.popmart.com/us/pop-now/set/50-10009450600350 50
+
+# Multiple products (recommended)
+node stockbot.js \
+  https://www.popmart.com/us/pop-now/set/50-10009450600350 50 \
+  https://www.popmart.com/us/pop-now/set/195-10002025000585 30 \
+  https://www.popmart.com/us/pop-now/set/270-10000294101890 25
+```
+
+### 5. View Live Dashboard
+Open `http://localhost:3000` in your browser for real-time monitoring.
+
+## 📋 Proxy Management Commands
 
 ```bash
-# Create new proxies
-node proxy-cli.js create 3
+# Proxy lifecycle
+node proxy-cli.js create <count>     # Create new proxies
+node proxy-cli.js list               # List all proxies
+node proxy-cli.js status             # Show health status
+node proxy-cli.js logs [service]     # View logs
+node proxy-cli.js teardown <service> # Remove specific proxy
+node proxy-cli.js teardown-all       # Remove all proxies
 
-# List active proxies
-node proxy-cli.js list
+# Using npm scripts
+npm run proxy create 3
+npm run proxy status
+npm run proxy logs
+```
 
-# Show proxy status
+## ⚡ Priority Queue System
+
+The system automatically prioritizes URLs based on stock conditions:
+
+### Priority Levels
+- **🔥 HIGH (Priority 1)**: Reserved + In-Stock (`state: 2` + `state: 0` with `box_no`)
+- **🟡 MEDIUM (Priority 2)**: Reserved only (`state: 2`)
+- **🟢 LOW (Priority 3)**: In-Stock only (`state: 0` with `box_no`)
+
+### Line-Cutting Rules
+- **HIGH priority**: Can cut up to 10 positions ahead
+- **MEDIUM priority**: Can cut up to 5 positions ahead  
+- **LOW priority**: Can cut up to 2 positions ahead
+
+### Throttling
+- Minimum 30-second intervals between priority checks
+- Prevents overwhelming high-priority items
+- Maintains fair rotation for regular URLs
+
+## 📊 Web Dashboard Features
+
+### Real-Time Monitoring
+- **Live updates** via Server-Sent Events
+- **Connection status** indicator
+- **Loading states** with spinner animations
+- **Automatic reconnection** on connection loss
+
+### Visual Indicators
+- **🟢 Green glow**: Items with actual stock available
+- **State dots**: 
+  - Green: Available slots
+  - Grey: Reserved/unavailable slots  
+  - Orange: Special states
+  - Light grey: Empty slots (when out of stock)
+- **Stock circles**: Green (in-stock), Red (out-of-stock), Grey (unknown)
+
+### Product Organization
+- **Separate sections** per product
+- **Base URL links** for quick access
+- **Seen/Unseen counters** for monitoring coverage
+- **Copy in-stock URLs** for quick action
+
+## 🔧 Configuration
+
+### Worker Concurrency
+Automatically optimized based on:
+```javascript
+workerCount = Math.min(urlCount, proxyCount)
+```
+
+### URL Pattern
+Expected format: `https://www.popmart.com/us/pop-now/set/{spuId}-1000{5digits}{suffix}`
+- Extracts `spuId` for product identification
+- Increments the 5-digit number for URL generation
+
+### Data Persistence
+- Individual TSV files per product: `{spuId}.tsv`
+- Columns: `url`, `state0-5`, `stock`, `lastChecked`
+- Automatic data loading and updating
+
+## 🛡️ Security Features
+
+### Proxy Security
+- **WebRTC blocking**: Multiple browser flags prevent IP leaks
+- **Header sanitization**: Removes IP-revealing headers
+- **Direct IP prevention**: Blocks direct IP connections
+- **Fake headers**: Injects Xfinity IP headers
+
+### AWS Security
+- **Custom security group**: `stockbot-socks5-proxy-sg`
+- **Minimal permissions**: Only port 1080 access
+- **Proper tagging**: All resources tagged for management
+- **Auto-cleanup**: Failed resources automatically removed
+
+## 📁 File Structure
+
+```
+stockbot/
+├── stockbot.js              # Main application with PriorityQueue
+├── proxy-manager.js         # Stateful AWS proxy management  
+├── proxy-cli.js             # CLI for proxy operations
+├── web-server.js            # Live dashboard server
+├── public/
+│   └── index.html           # Web dashboard interface
+├── proxies.json             # Proxy state (auto-generated)
+├── {spuId}.tsv              # Product data files (auto-generated)
+├── PROXY_SECURITY.md        # Security documentation
+├── package.json             # Dependencies
+└── README.md                # This file
+```
+
+## 🧪 Testing & Debugging
+
+### Proxy Testing
+```bash
+# Test existing proxies
+node test-ip-leak.js
+
+# Test connectivity
+npm run test:connectivity
+```
+
+### Debug Features
+- **Screenshot capture** for failed requests
+- **Detailed logging** with emoji indicators
+- **Debug endpoints**: `/api/stock`, `/health`
+- **Console logging**: Priority queue status, worker activity
+
+## 🔍 Monitoring
+
+### Console Output
+```
+📊 Workers: 6/6 active | Round-robin: cycle 1, position 3/30 | Priority: HIGH: 2, MEDIUM: 1
+🔥 Set priority HIGH: https://example.com/set/50-123 (reserved + in-stock)
+⚡ Priority check (HIGH): https://example.com/set/50-123
+💾 [us-west-1] Updated: https://example.com/set/50-123 [0 1 1 1 1 1] stock:true
+```
+
+### Web Dashboard Metrics
+- Total URLs monitored
+- Active products
+- Real-time connection status
+- Last update timestamps
+
+## 🚨 Error Handling
+
+### Graceful Failures
+- **No proxies**: Clear instructions to create proxies
+- **Invalid URLs**: Pattern validation with examples
+- **AWS errors**: Detailed error messages with context
+- **Connection issues**: Automatic retry with exponential backoff
+
+### Recovery Mechanisms
+- **Proxy validation**: Removes inactive proxies automatically
+- **Worker restart**: Failed workers auto-restart with new proxies
+- **Data consistency**: TSV files protected against corruption
+
+## 🏷️ AWS Resources
+
+The system creates and manages:
+- **ECS Fargate tasks**: SOCKS5 proxy containers
+- **CloudWatch log groups**: Monitoring and debugging
+- **IAM roles**: Minimal required permissions
+- **Security groups**: Port 1080 access only
+- **Network interfaces**: Public IPs for proxy access
+
+All resources are properly tagged with `Project: stockbot` for easy management.
+
+## 💡 Best Practices
+
+### Performance
+- Use 10-20 proxies for optimal performance
+- Monitor 50-100 URLs per product maximum
+- Run on stable network connection
+
+### Security  
+- Regularly rotate proxies (weekly)
+- Monitor for IP leaks using test tools
+- Use high-quality proxy providers
+
+### Monitoring
+- Keep web dashboard open for real-time monitoring
+- Set up alerts for in-stock items
+- Regular backup of TSV data files
+
+## 🔧 Troubleshooting
+
+### Common Issues
+1. **No proxies available**: Run `node proxy-cli.js create 5`
+2. **URLs not loading**: Check proxy status with `node proxy-cli.js status`
+3. **Dashboard not updating**: Verify port 3000 is accessible
+4. **AWS errors**: Check credentials and permissions
+
+### Support Commands
+```bash
+# Check proxy health
 node proxy-cli.js status
 
-# Show logs for all proxies
+# View detailed logs  
 node proxy-cli.js logs
 
-# Show logs for specific proxy
-node proxy-cli.js logs <service-name>
+# Test connectivity
+node test-ip-leak.js
 
-# Teardown specific proxy
-node proxy-cli.js teardown <service-name>
-
-# Teardown all proxies
-node proxy-cli.js teardown-all
+# Debug web dashboard
+curl http://localhost:3000/api/stock
 ```
 
-### Using npm scripts
+---
 
-```bash
-# Alternative way to run proxy CLI
-npm run proxy create 3
-npm run proxy list
-npm run proxy status
-```
-
-### Proxy State Management
-
-- Proxy state is automatically saved to `proxies.json`
-- Proxies persist between CLI sessions
-- State includes proxy URLs, regions, service names, and creation timestamps
-- On startup, the system validates all stored proxies and removes inactive ones
-
-## Running StockBot
-
-Once you have active proxies, you can run the stockbot:
-
-```bash
-node stockbot.js <base_url> <count>
-```
-
-Example:
-```bash
-node stockbot.js https://www.popmart.com/us/pop-now/set/40-10006774100280 50
-```
-
-## Workflow
-
-### First Time Setup
-1. Create proxies: `node proxy-cli.js create 5`
-2. Verify proxies: `node proxy-cli.js status`
-3. Run stockbot: `node stockbot.js <url> <count>`
-
-### Daily Usage
-1. Check proxy status: `node proxy-cli.js status`
-2. Run stockbot: `node stockbot.js <url> <count>`
-3. Monitor logs if needed: `node proxy-cli.js logs`
-
-### Maintenance
-- View logs: `node proxy-cli.js logs`
-- Clean up old proxies: `node proxy-cli.js teardown-all`
-- Create fresh proxies: `node proxy-cli.js create <count>`
-
-## Key Features
-
-### Stateful Proxy Management
-- ✅ Persistent proxy storage in `proxies.json`
-- ✅ Automatic validation of stored proxies on startup
-- ✅ Graceful handling of inactive/deleted proxies
-- ✅ Separate lifecycle management from stockbot
-
-### CLI Management
-- ✅ Create proxies independently
-- ✅ List and monitor active proxies
-- ✅ Individual proxy teardown
-- ✅ Bulk operations for all proxies
-- ✅ Log viewing and monitoring
-
-### StockBot Integration
-- ✅ Uses existing proxy pool
-- ✅ No proxy creation/destruction during scraping
-- ✅ Efficient proxy rotation
-- ✅ Graceful error handling when no proxies available
-
-## File Structure
-
-```
-├── stockbot.js           # Main scraping bot
-├── proxy-manager.js      # Stateful proxy manager
-├── proxy-cli.js          # CLI for proxy management
-├── proxies.json          # Proxy state storage (auto-generated)
-├── package.json          # Dependencies and scripts
-└── README.md             # This file
-```
-
-## Testing
-
-### Test Existing Proxies
-
-Test the functionality of your existing proxies without creating or destroying them:
-
-```bash
-# Basic test using existing proxies
-npm run test:proxy
-
-# Test with custom URL
-node test-proxy-manager.js https://www.popmart.com/us/pop-now/set/40-10006774100280
-
-# Test with logs displayed
-node test-proxy-manager.js --logs
-
-# Test and allow teardown (destroys proxies!)
-node test-proxy-manager.js --teardown
-npm run test:proxy:teardown
-```
-
-### Test System Separation
-
-Test that the separated proxy system works correctly:
-
-```bash
-npm run test:separation
-```
-
-## Error Handling
-
-- If no proxies are available, stockbot will exit with instructions to create proxies
-- Invalid/inactive proxies are automatically removed from state
-- AWS service errors are logged with helpful context
-- CLI commands include proper error handling and user feedback
-
-## AWS Resources
-
-The proxy manager creates the following AWS resources:
-- ECS Fargate tasks for SOCKS5 proxies running on port 1080 using [httptoolkit/docker-socks-tunnel](https://github.com/httptoolkit/docker-socks-tunnel)
-- CloudWatch log groups for monitoring
-- IAM roles for ECS execution
-- Custom security group (`stockbot-socks5-proxy-sg`) with inbound rules for port 1080
-- Network interfaces with public IPs
-
-All resources are properly tagged and managed through the CLI.
-
-### Security Configuration
-
-The system automatically creates a security group named `stockbot-socks5-proxy-sg` that allows:
-- **Inbound TCP traffic on port 1080** from anywhere (0.0.0.0/0) for SOCKS5 proxy access
-- This replaces reliance on the default security group which typically blocks custom ports
-
-If security group creation fails, the system falls back to the default security group (which may not allow proxy connections).
-
-### Proxy Implementation
-
-Uses the reliable [serjs/go-socks5-proxy](https://hub.docker.com/r/serjs/go-socks5-proxy) Docker image:
-- Based on Go implementation of SOCKS5 proxy
-- Lightweight and efficient
-- No authentication required for simplicity  
-- Runs on standard SOCKS5 port 1080 
+**Built with ❤️ for efficient Popmart stock monitoring** 

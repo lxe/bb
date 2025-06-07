@@ -97,13 +97,52 @@ class WebServer {
   async getCurrentStockData() {
     const result = {};
     
-    for (const [spuExtId, urlMap] of this.stockBot.stockData.entries()) {
-      result[spuExtId] = Array.from(urlMap.values()).map(entry => ({
-        url: entry.url,
-        states: [entry.state0, entry.state1, entry.state2, entry.state3, entry.state4, entry.state5],
-        stock: entry.stock === 'true',
-        lastChecked: entry.lastChecked
-      }));
+    // Process each product
+    for (const product of this.stockBot.products) {
+      const spuExtId = product.spuExtId;
+      const urlMap = this.stockBot.stockData.get(spuExtId) || new Map();
+      
+      console.log(`🔍 Product ${spuExtId}: urlMap has ${urlMap.size} entries, product.urls has ${product.urls.length} entries`);
+      
+      let seenCount = 0;
+      let unseenCount = 0;
+      
+      result[spuExtId] = {
+        baseUrl: product.baseUrl,
+        totalUrls: product.count,
+        urls: product.urls.map(url => {
+          const entry = urlMap.get(url);
+          if (entry) {
+            // URL has been processed before
+            seenCount++;
+            return {
+              url: entry.url,
+              states: [entry.state0, entry.state1, entry.state2, entry.state3, entry.state4, entry.state5],
+              stock: entry.stock === 'true',
+              lastChecked: entry.lastChecked,
+              status: 'seen'
+            };
+          } else {
+            // URL has never been processed
+            unseenCount++;
+            return {
+              url,
+              states: ['', '', '', '', '', ''],
+              stock: false,
+              lastChecked: null,
+              status: 'unseen'
+            };
+          }
+        })
+      };
+      
+      console.log(`🔍 Product ${spuExtId}: ${seenCount} seen, ${unseenCount} unseen`);
+      
+      // Debug: Show first few URLs from both sets
+      if (urlMap.size > 0) {
+        console.log(`🔍 First 3 URLs in urlMap:`, Array.from(urlMap.keys()).slice(0, 3));
+      }
+      console.log(`🔍 First 3 URLs in product.urls:`, product.urls.slice(0, 3));
     }
     
     return result;
@@ -149,10 +188,20 @@ class WebServer {
       return; // No clients to broadcast to
     }
 
+    // Find which product this URL belongs to
+    let spuExtId = null;
+    for (const product of this.stockBot.products) {
+      if (product.urls.includes(url)) {
+        spuExtId = product.spuExtId;
+        break;
+      }
+    }
+
     const loadingData = {
       type: 'loading',
       url,
       region,
+      spuExtId,
       timestamp: new Date().toISOString()
     };
 

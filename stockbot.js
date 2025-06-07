@@ -4,6 +4,8 @@ const { ProxyManager } = require('./proxy-manager');
 const WebServer = require('./web-server');
 const fs = require('fs').promises;
 
+// ===== ASYNC QUEUE IMPLEMENTATION =====
+
 class AsyncQueue {
   constructor(concurrency = 1) {
     this.concurrency = concurrency;
@@ -13,11 +15,7 @@ class AsyncQueue {
 
   async add(task) {
     return new Promise((resolve, reject) => {
-      this.queue.push({
-        task,
-        resolve,
-        reject
-      });
+      this.queue.push({ task, resolve, reject });
       this.process();
     });
   }
@@ -37,48 +35,247 @@ class AsyncQueue {
       reject(error);
     } finally {
       this.running--;
-      this.process();
+      this.process(); // Process next task
     }
   }
 }
+
+// ===== PRIORITY QUEUE WITH LINE-CUTTING =====
+
+class PriorityQueue {
+  constructor() {
+    this.urls = []; // Main URL rotation array
+    this.currentIndex = 0;
+    this.priorityMap = new Map(); // url -> { priority: 1-3, addedAt: timestamp }
+    this.lastPriorityCheck = new Map(); // url -> last check timestamp
+    this.maxLineCuts = 5; // Maximum positions a priority URL can cut ahead
+    this.priorityCheckInterval = 30000; // 30 seconds minimum between priority checks
+  }
+
+  initialize(urls) {
+    this.urls = [...urls];
+    this.currentIndex = 0;
+    this.priorityMap.clear();
+    this.lastPriorityCheck.clear();
+  }
+
+  // Set priority level for a URL (1 = highest, 3 = lowest, 0 = remove priority)
+  setPriority(url, priority, reason = '') {
+    if (priority === 0) {
+      if (this.priorityMap.has(url)) {
+        this.priorityMap.delete(url);
+        this.lastPriorityCheck.delete(url);
+        console.log(`❄️ Removed priority: ${url} (${reason})`);
+      }
+      return;
+    }
+
+    const existingPriority = this.priorityMap.get(url);
+    if (existingPriority && existingPriority.priority === priority) {
+      // Priority level unchanged, just update timestamp
+      existingPriority.addedAt = Date.now();
+      return;
+    }
+
+    this.priorityMap.set(url, {
+      priority: priority,
+      addedAt: Date.now()
+    });
+
+    const priorityNames = { 1: 'HIGH', 2: 'MEDIUM', 3: 'LOW' };
+    console.log(`🔥 Set priority ${priorityNames[priority]}: ${url} (${reason})`);
+  }
+
+  // Get next URL using line-cutting logic
+  getNextUrl() {
+    if (this.urls.length === 0) return null;
+
+    // Check if we have any priority URLs that are due for checking
+    const priorityUrl = this.getNextPriorityUrl();
+    if (priorityUrl) {
+      return priorityUrl;
+    }
+
+    // No priority URLs ready, return next regular URL
+    const url = this.urls[this.currentIndex];
+    this.currentIndex = (this.currentIndex + 1) % this.urls.length;
+    return url;
+  }
+
+  getNextPriorityUrl() {
+    const now = Date.now();
+    
+    // Find all priority URLs that are ready for checking
+    const readyPriorityUrls = [];
+    
+    for (const [url, info] of this.priorityMap.entries()) {
+      const lastCheck = this.lastPriorityCheck.get(url) || 0;
+      const timeSinceLastCheck = now - lastCheck;
+      
+      // Check if enough time has passed since last priority check
+      if (timeSinceLastCheck >= this.priorityCheckInterval) {
+        readyPriorityUrls.push({ url, ...info });
+      }
+    }
+
+    if (readyPriorityUrls.length === 0) {
+      return null;
+    }
+
+    // Sort by priority level (1 = highest priority first)
+    readyPriorityUrls.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority; // Lower number = higher priority
+      }
+      return a.addedAt - b.addedAt; // Older first if same priority
+    });
+
+    // Get the highest priority URL that can cut in line
+    for (const priorityUrl of readyPriorityUrls) {
+      if (this.canCutInLine(priorityUrl.url, priorityUrl.priority)) {
+        this.lastPriorityCheck.set(priorityUrl.url, now);
+        console.log(`⚡ Priority check (${this.getPriorityName(priorityUrl.priority)}): ${priorityUrl.url}`);
+        return priorityUrl.url;
+      }
+    }
+
+    return null;
+  }
+
+  canCutInLine(url, priority) {
+    // Find the position of this URL in the regular rotation
+    const urlIndex = this.urls.indexOf(url);
+    if (urlIndex === -1) return false;
+
+    // Calculate how far ahead this URL would be cutting
+    let cutDistance = 0;
+    if (urlIndex >= this.currentIndex) {
+      cutDistance = urlIndex - this.currentIndex;
+    } else {
+      cutDistance = (this.urls.length - this.currentIndex) + urlIndex;
+    }
+
+    // Higher priority (lower number) can cut further ahead
+    const maxCutsForPriority = {
+      1: this.maxLineCuts * 2,     // HIGH priority can cut up to 10 positions
+      2: this.maxLineCuts,         // MEDIUM priority can cut up to 5 positions  
+      3: Math.floor(this.maxLineCuts / 2) // LOW priority can cut up to 2 positions
+    };
+
+    return cutDistance <= (maxCutsForPriority[priority] || 0);
+  }
+
+  getPriorityName(priority) {
+    const names = { 1: 'HIGH', 2: 'MEDIUM', 3: 'LOW' };
+    return names[priority] || 'UNKNOWN';
+  }
+
+  // Get status information
+  getStatus() {
+    const priorityStats = {};
+    for (const [url, info] of this.priorityMap.entries()) {
+      const priorityName = this.getPriorityName(info.priority);
+      priorityStats[priorityName] = (priorityStats[priorityName] || 0) + 1;
+    }
+
+    return {
+      totalUrls: this.urls.length,
+      currentPosition: this.currentIndex + 1,
+      cycle: Math.floor(this.currentIndex / this.urls.length) + 1,
+      priorityStats
+    };
+  }
+}
+
+// ===== PERSISTENT PAGE WORKER =====
+
+class PageWorker {
+  constructor(id, proxy, stockBot) {
+    this.id = id;
+    this.proxy = proxy;
+    this.stockBot = stockBot;
+    this.page = null;
+    this.isRunning = false;
+  }
+
+  async init() {
+    console.log(`🔧 [Worker ${this.id}] Initializing with proxy: ${this.proxy.region}`);
+    this.page = await this.stockBot.browser.newPage();
+    
+    // Configure proxy and privacy settings once
+    await useProxy(this.page, this.proxy.url);
+    await this.stockBot.setupPagePrivacy(this.page);
+    
+    console.log(`✅ [Worker ${this.id}] Ready with proxy: ${this.proxy.region}`);
+  }
+
+  async start() {
+    this.isRunning = true;
+    
+    while (this.isRunning) {
+      const url = this.stockBot.getNextUrl();
+      if (!url) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      console.log(`🔄 [Worker ${this.id} - ${this.proxy.region}] Processing: ${url}`);
+      
+      // Send loading state to web clients
+      if (this.stockBot.webServer) {
+        this.stockBot.webServer.broadcastLoading(url, this.proxy.region);
+      }
+
+      try {
+        // Extract data from API response
+        const extractedData = await this.stockBot.extractStockDataWithPage(this.page, url);
+
+        if (extractedData) {
+          await this.stockBot.processStockData(extractedData, url, this.proxy.region);
+        } else {
+          console.log(`📭 [Worker ${this.id} - ${this.proxy.region}] No API data found for: ${url}`);
+          await this.stockBot.takeDebugScreenshot(this.page, url, this.proxy.region);
+        }
+      } catch (error) {
+        console.error(`❌ [Worker ${this.id} - ${this.proxy.region}] Error processing ${url}:`, error.message);
+      }
+
+      // Wait 500ms before processing next URL
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+
+  async stop() {
+    this.isRunning = false;
+    if (this.page) {
+      await this.page.close();
+      console.log(`🛑 [Worker ${this.id}] Stopped`);
+    }
+  }
+}
+
+// ===== MAIN STOCKBOT CLASS =====
 
 class StockBot {
   constructor() {
     this.browser = null;
     this.proxyManager = new ProxyManager();
     this.proxies = [];
-    this.stockData = new Map(); // Internal JSON structure: spuExtId -> Map(url -> stockEntry)
-    this.urls = [];
-    this.currentUrlIndex = 0;
+    this.stockData = new Map(); // spuExtId -> Map(url -> stockEntry)
+    this.products = []; // Array of {baseUrl, count, spuExtId, urls}
+    this.priorityQueue = new PriorityQueue(); // New priority queue system
     this.isRunning = false;
     this.webServer = null;
-    this.proxyStatus = new Map(); // proxy.url -> { busy: boolean, currentUrl: string|null }
+    this.workers = []; // Persistent page workers
   }
+
+  // ===== INITIALIZATION =====
 
   async init() {
     console.log('🚀 Initializing StockBot...');
     await this.setupProxies();
     await this.launchBrowser();
-    
-    // Initialize proxy status tracking
-    this.proxies.forEach(proxy => {
-      this.proxyStatus.set(proxy.url, { busy: false, currentUrl: null });
-    });
-    
-    console.log(`🔧 Proxy status tracking initialized for ${this.proxies.length} proxies`);
-    
-         // Monitor proxy utilization every 3 seconds
-     this.proxyMonitor = setInterval(() => {
-       if (this.isRunning) {
-         const busyProxies = Array.from(this.proxyStatus.values()).filter(status => status.busy).length;
-         const freeProxies = this.proxies.length - busyProxies;
-         const currentCycle = Math.floor(this.currentUrlIndex / this.urls.length) + 1;
-         const positionInCycle = (this.currentUrlIndex % this.urls.length) + 1;
-         console.log(`📊 Proxies: ${busyProxies}/${this.proxies.length} busy, ${freeProxies} free | Round-robin: cycle ${currentCycle}, position ${positionInCycle}/${this.urls.length}`);
-       }
-     }, 3000);
-    
-    // Initialize web server
+
     this.webServer = new WebServer(this);
     this.webServer.start();
   }
@@ -86,64 +283,194 @@ class StockBot {
   async setupProxies() {
     await this.proxyManager.init();
     this.proxies = this.proxyManager.getActiveProxies();
-    
+
     if (this.proxies.length === 0) {
-      console.log('⚠️  No active proxies found. Please create proxies using: node proxy-cli.js create <count>');
       throw new Error('No proxies available. Use proxy-cli to create proxies first.');
     }
-    
-    console.log(`✅ ${this.proxies.length} proxies loaded for maximum parallelism`);
+
+    console.log(`✅ ${this.proxies.length} proxies loaded`);
   }
 
   async launchBrowser() {
-    console.log('🌐 Launching single browser instance...');
+    console.log('🌐 Launching browser...');
     this.browser = await puppeteer.launch({
       headless: true,
       args: [
         '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--ignore-certificate-errors',
-        '--ignore-ssl-errors'
-      ]
+        '--disable-webrtc-hw-decoding',
+        '--disable-webrtc-hw-encoding',
+        '--disable-dns-prefetching',
+        '--disable-background-networking',
+        '--disable-dev-shm-usage',
+      ],
     });
     console.log('✅ Browser launched');
   }
 
+  async initializeWorkers(urlCount) {
+    // Calculate optimal number of workers: min(urlCount, proxies.length)
+    const workerCount = Math.min(urlCount, this.proxies.length);
+    console.log(`🏭 Initializing ${workerCount} persistent workers (${urlCount} URLs, ${this.proxies.length} proxies)`);
+
+    // Create workers with dedicated proxies
+    for (let i = 0; i < workerCount; i++) {
+      const proxy = this.proxies[i];
+      const worker = new PageWorker(i + 1, proxy, this);
+      await worker.init();
+      this.workers.push(worker);
+    }
+
+    console.log(`✅ ${workerCount} workers initialized`);
+  }
+
+  // ===== URL GENERATION =====
+
+  generateUrlsForProduct(baseUrl, count) {
+    console.log(`📋 Generating ${count} URLs from: ${baseUrl}`);
+
+    // Pattern: {prefix}-1000{5digits}{suffix}
+    const urlPattern = /^(.+-1000)(\d{5})(\d+)$/;
+    const match = baseUrl.match(urlPattern);
+
+    if (!match) {
+      throw new Error('Invalid URL pattern. Expected: .../PREFIX-1000XXXXX... where XXXXX are 5 digits to increment');
+    }
+
+    const [, prefix, baseNumberStr, suffix] = match;
+    const baseNumber = parseInt(baseNumberStr);
+
+    // Extract spuExtId from baseUrl (the number before -1000)
+    const spuExtIdMatch = baseUrl.match(/(\d+)-1000\d+/);
+    const spuExtId = spuExtIdMatch ? parseInt(spuExtIdMatch[1]) : null;
+
+    if (!spuExtId) {
+      throw new Error('Could not extract spuExtId from URL');
+    }
+
+    const urls = [];
+    for (let i = 0; i < count; i++) {
+      const newNumber = (baseNumber + i).toString().padStart(5, '0');
+      urls.push(`${prefix}${newNumber}${suffix}`);
+    }
+
+    console.log(`✅ Generated URLs for product ${spuExtId}: ${baseNumberStr} to ${(baseNumber + count - 1).toString().padStart(5, '0')}`);
+    return { spuExtId, urls };
+  }
+
+  setupProducts(productSpecs) {
+    console.log(`🏭 Setting up ${productSpecs.length} products...`);
+    
+    // Generate URLs for each product
+    for (const { baseUrl, count } of productSpecs) {
+      const { spuExtId, urls } = this.generateUrlsForProduct(baseUrl, count);
+      this.products.push({
+        baseUrl,
+        count,
+        spuExtId,
+        urls
+      });
+    }
+
+    // Interleave URLs from all products for fair distribution
+    this.interleaveUrls();
+    
+    console.log(`✅ Setup complete: ${this.products.length} products, ${this.priorityQueue.urls.length} total URLs`);
+  }
+
+  interleaveUrls() {
+    const urlQueues = this.products.map(product => [...product.urls]);
+    const interleavedUrls = [];
+
+    // Keep going until all queues are empty
+    while (urlQueues.some(queue => queue.length > 0)) {
+      for (let i = 0; i < urlQueues.length; i++) {
+        if (urlQueues[i].length > 0) {
+          interleavedUrls.push(urlQueues[i].shift());
+        }
+      }
+    }
+
+    this.priorityQueue.initialize(interleavedUrls);
+    console.log(`🔀 Interleaved ${interleavedUrls.length} URLs across ${this.products.length} products`);
+  }
+
+  getNextUrl() {
+    return this.priorityQueue.getNextUrl();
+  }
+
+  // ===== PRIORITY MANAGEMENT =====
+
+  updateUrlPriority(url, extractedData) {
+    if (!extractedData?.data?.box_list) {
+      this.priorityQueue.setPriority(url, 0, 'no data');
+      return;
+    }
+
+    const boxList = extractedData.data.box_list;
+    let hasReserved = false;
+    let hasInStock = false;
+
+    boxList.forEach((box) => {
+      if (box.position >= 1 && box.position <= 6) {
+        // Check for reserved (state 2)
+        if (box.state === 2) {
+          hasReserved = true;
+        }
+        // Check for in stock (state 0 with box_no)
+        if (box.state === 0 && box.box_no && box.box_no.trim() !== '') {
+          hasInStock = true;
+        }
+      }
+    });
+
+    if (hasReserved && hasInStock) {
+      this.priorityQueue.setPriority(url, 1, 'reserved + in-stock'); // HIGH priority
+    } else if (hasReserved) {
+      this.priorityQueue.setPriority(url, 2, 'reserved'); // MEDIUM priority
+    } else if (hasInStock) {
+      this.priorityQueue.setPriority(url, 3, 'in-stock'); // LOW priority
+    } else {
+      this.priorityQueue.setPriority(url, 0, 'no priority conditions'); // Remove priority
+    }
+  }
+
+  // ===== DATA PERSISTENCE =====
+
   async loadExistingTsvData(spuExtId) {
     const filename = `${spuExtId}.tsv`;
-    console.log(`📂 Loading existing data from ${filename}...`);
-    
+
     try {
       const content = await fs.readFile(filename, 'utf8');
-      const lines = content.split('\n').filter(line => line.trim());
-      
+      const lines = content.split('\n').filter((line) => line.trim());
+
       if (lines.length <= 1) {
-        console.log(`📄 ${filename} is empty or only has headers`);
+        console.log(`📄 ${filename} is empty`);
+        this.stockData.set(spuExtId, new Map());
         return;
       }
 
       const headers = lines[0].split('\t');
       const urlMap = new Map();
-      
+
       for (let i = 1; i < lines.length; i++) {
         const values = lines[i].split('\t');
         const entry = {};
         headers.forEach((header, index) => {
           entry[header] = values[index] || '';
         });
-        
+
         if (entry.url) {
           urlMap.set(entry.url, entry);
         }
       }
-      
+
       this.stockData.set(spuExtId, urlMap);
-      console.log(`✅ Loaded ${urlMap.size} existing entries for ${filename}`);
-      
+      console.log(`✅ Loaded ${urlMap.size} entries from ${filename}`);
     } catch (error) {
-      console.log(`📄 ${filename} doesn't exist yet, will create new one`);
+      console.log(`📄 ${filename} doesn't exist, creating new`);
       this.stockData.set(spuExtId, new Map());
     }
   }
@@ -151,341 +478,256 @@ class StockBot {
   async updateTsvFile(spuExtId) {
     const filename = `${spuExtId}.tsv`;
     const urlMap = this.stockData.get(spuExtId);
-    
-    if (!urlMap || urlMap.size === 0) {
-      return;
-    }
+
+    if (!urlMap || urlMap.size === 0) return;
 
     const headers = ['url', 'state0', 'state1', 'state2', 'state3', 'state4', 'state5', 'stock', 'lastChecked'];
     const headerLine = headers.join('\t');
-    
-    const dataLines = Array.from(urlMap.values()).map(entry => 
-      headers.map(header => entry[header] || '').join('\t')
+
+    const dataLines = Array.from(urlMap.values()).map((entry) =>
+      headers.map((header) => entry[header] || '').join('\t')
     );
-    
+
     const tsvContent = [headerLine, ...dataLines].join('\n');
-    
     await fs.writeFile(filename, tsvContent);
   }
 
-  generateUrls(baseUrl, count) {
-    console.log(`📋 Generating ${count} URLs from base: ${baseUrl}`);
-    
-    // Correct pattern matching for PopMart URLs
-    // Examples: 
-    // - https://www.popmart.com/us/pop-now/set/195-10002154800585
-    // - https://www.popmart.com/us/pop-now/set/40-10006774100280
-    // Pattern: {prefix}-1000{5digits}{suffix} where the 5 digits get incremented
-    const urlPattern = /^(.+-1000)(\d{5})(\d+)$/;
-    const match = baseUrl.match(urlPattern);
-    
-    if (!match) {
-      throw new Error('❌ Invalid URL pattern. Expected format: .../[PREFIX]-1000[5DIGITS][SUFFIX] where the 5 digits will be incremented');
-    }
+  // ===== CORE PROCESSING =====
 
-    const prefix = match[1]; // Everything up to and including "-1000"
-    const baseNumber = parseInt(match[2]); // The 5-digit sequence to increment
-    const suffix = match[3]; // The suffix after the 5 digits
-    
-    const urls = [];
-    
-    for (let i = 0; i < count; i++) {
-      const newNumber = baseNumber + i;
-      // Pad to 5 digits with leading zeros
-      const paddedNumber = newNumber.toString().padStart(5, '0');
-      const newUrl = `${prefix}${paddedNumber}${suffix}`;
-      urls.push(newUrl);
-    }
-
-    console.log(`✅ Generated ${urls.length} URLs (${baseNumber.toString().padStart(5, '0')} to ${(baseNumber + count - 1).toString().padStart(5, '0')})`);
-    return urls;
-  }
-
-  getNextUrl() {
-    if (this.urls.length === 0) return null;
-    
-    const url = this.urls[this.currentUrlIndex];
-    this.currentUrlIndex = (this.currentUrlIndex + 1) % this.urls.length; // Round-robin!
-    return url;
-  }
-
-  getFreeProxy() {
-    for (const proxy of this.proxies) {
-      const status = this.proxyStatus.get(proxy.url);
-      if (!status.busy) {
-        return proxy;
+  async setupPagePrivacy(page) {
+    // Block WebRTC and set fake headers to prevent IP leaks
+    await page.evaluateOnNewDocument(() => {
+      if (typeof navigator !== 'undefined') {
+        navigator.mediaDevices = undefined;
+        navigator.webkitGetUserMedia = undefined;
       }
-    }
-    return null;
+
+      if (typeof window !== 'undefined') {
+        window.RTCPeerConnection = undefined;
+        window.webkitRTCPeerConnection = undefined;
+      }
+    });
+
+    const fakeIP = this.generateRandomXfinityIP();
+    await page.setExtraHTTPHeaders({
+      'X-Forwarded-For': fakeIP,
+      'X-Real-IP': fakeIP,
+      'X-Client-IP': fakeIP,
+    });
   }
 
-  setProxyBusy(proxy, url) {
-    const status = this.proxyStatus.get(proxy.url);
-    status.busy = true;
-    status.currentUrl = url;
-    console.log(`🔄 [${proxy.region}] Starting: ${url}`);
-    
-    // Send loading state immediately when proxy allocated
-    if (this.webServer) {
-      this.webServer.broadcastLoading(url, proxy.region);
-      console.log(`📡 [${proxy.region}] Sent loading event for: ${url}`);
-    }
+  generateRandomXfinityIP() {
+    // Generate random IP from Xfinity ranges
+    const ranges = [
+      () => `50.218.46.${Math.floor(Math.random() * 254) + 1}`,
+      () => {
+        const second = Math.floor(Math.random() * 16) + 192;
+        const third = Math.floor(Math.random() * 256);
+        const fourth = Math.floor(Math.random() * 254) + 1;
+        return `71.${second}.${third}.${fourth}`;
+      },
+    ];
+
+    return ranges[Math.floor(Math.random() * ranges.length)]();
   }
 
-  setProxyFree(proxy) {
-    const status = this.proxyStatus.get(proxy.url);
-    const url = status.currentUrl;
-    status.busy = false;
-    status.currentUrl = null;
-    console.log(`✅ [${proxy.region}] Completed: ${url}`);
-    
-    // FIXED: Saturate ALL available proxies, not just one
-    this.saturateAvailableProxies();
-  }
+  async extractStockData(page, url) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(null), 30000);
 
-  async processUrl(url, proxy) {
-    const startTime = Date.now();
-    
-    // Mark proxy as busy (loading state sent in setProxyBusy)
-    this.setProxyBusy(proxy, url);
-    
-    const page = await this.browser.newPage();
-    
-    try {
-      const pageCreateTime = Date.now();
-      
-      // Set proxy for this specific page
-      await useProxy(page, proxy.url);
-      const proxySetTime = Date.now();
-      
-      const extractedData = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          resolve(null);
-        }, 30000);
-
-        page.on('response', async (response) => {
-          const responseUrl = response.url();
-          
-          if (responseUrl.includes('prod-na-api.popmart.com/shop/v1/box/box_set/refreshBox')) {
-            try {
-              const jsonData = await response.json();
-              clearTimeout(timeout);
-              resolve(jsonData);
-            } catch (error) {
-              console.warn(`⚠️  Failed to parse JSON from ${responseUrl}:`, error.message);
-              clearTimeout(timeout);
-              resolve(null);
-            }
+      page.on('response', async (response) => {
+        if (response.url().includes('prod-na-api.popmart.com/shop/v1/box/box_set/refreshBox')) {
+          try {
+            const jsonData = await response.json();
+            clearTimeout(timeout);
+            resolve(jsonData);
+          } catch (error) {
+            console.warn(`⚠️ Failed to parse API response:`, error.message);
+            clearTimeout(timeout);
+            resolve(null);
           }
-        });
-
-        page.goto(url, { waitUntil: 'networkidle2' }).catch(reject);
+        }
       });
-      
-      const dataExtractionTime = Date.now();
 
-      if (extractedData && extractedData.data && extractedData.data.box_list) {
-        const spuExtId = extractedData.data.spu_ext_id;
-        const boxList = extractedData.data.box_list;
-        
-        // Extract states from box_list (positions 1-6, but we want indices 0-5)
-        const states = new Array(6).fill('');
-        let hasStock = false;
-        
-        boxList.forEach(box => {
-          if (box.position >= 1 && box.position <= 6) {
-            states[box.position - 1] = box.state.toString();
-            
-            // Check if any box has a non-empty box_no (indicates stock availability)
-            if (box.box_no && box.box_no.trim() !== '') {
-              hasStock = true;
-            }
-          }
-        });
+      page.goto(url, { waitUntil: 'networkidle2' }).catch(() => {
+        clearTimeout(timeout);
+        resolve(null);
+      });
+    });
+  }
 
-        const stockEntry = {
-          url: url,
-          state0: states[0] || '',
-          state1: states[1] || '',
-          state2: states[2] || '',
-          state3: states[3] || '',
-          state4: states[4] || '',
-          state5: states[5] || '',
-          stock: hasStock ? 'true' : 'false',
-          lastChecked: new Date().toISOString()
-        };
+  async extractStockDataWithPage(page, url) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(null), 30000);
 
-        // Check if data changed
-        if (!this.stockData.has(spuExtId)) {
-          await this.loadExistingTsvData(spuExtId);
-        }
-
-        const urlMap = this.stockData.get(spuExtId);
-        const existingEntry = urlMap.get(url);
-        const statesString = states.join(' ');
-
-        let dataChanged = false;
-        if (!existingEntry) {
-          dataChanged = true;
-          console.log(`🆕 [${proxy.region}] New entry: ${url} [${statesString}] stock:${hasStock}`);
-        } else {
-          const oldStates = [existingEntry.state0, existingEntry.state1, existingEntry.state2, 
-                           existingEntry.state3, existingEntry.state4, existingEntry.state5].join(' ');
-          const oldStock = existingEntry.stock === 'true';
-          
-          if (oldStates !== statesString || oldStock !== hasStock) {
-            dataChanged = true;
-            const stockChange = oldStock !== hasStock ? ` stock:${oldStock}→${hasStock}` : '';
-            console.log(`🔄 [${proxy.region}] State changed: ${url} [${oldStates}] → [${statesString}]${stockChange}`);
-          } else {
-            console.log(`✅ [${proxy.region}] No change: ${url} [${statesString}] stock:${hasStock}`);
+      const responseHandler = async (response) => {
+        if (response.url().includes('prod-na-api.popmart.com/shop/v1/box/box_set/refreshBox')) {
+          try {
+            const jsonData = await response.json();
+            clearTimeout(timeout);
+            page.off('response', responseHandler);
+            resolve(jsonData);
+          } catch (error) {
+            console.warn(`⚠️ Failed to parse API response:`, error.message);
+            clearTimeout(timeout);
+            page.off('response', responseHandler);
+            resolve(null);
           }
         }
-
-        // Update internal structure
-        urlMap.set(url, stockEntry);
-
-        // Update TSV file immediately if data changed
-        if (dataChanged) {
-          await this.updateTsvFile(spuExtId);
-          console.log(`💾 [${proxy.region}] Updated ${spuExtId}.tsv`);
-        }
-
-        const dataProcessingTime = Date.now();
-
-        // Broadcast update to web clients
-        if (this.webServer) {
-          this.webServer.broadcastUpdate(spuExtId, url, stockEntry);
-        }
-
-        const totalTime = Date.now();
-
-        // Log detailed timing information
-        const timings = {
-          pageCreate: pageCreateTime - startTime,
-          proxySet: proxySetTime - pageCreateTime,
-          dataExtraction: dataExtractionTime - proxySetTime,
-          dataProcessing: dataProcessingTime - dataExtractionTime,
-          webBroadcast: totalTime - dataProcessingTime,
-          total: totalTime - startTime
-        };
-
-        console.log(`⏱️  [${proxy.region}] ${url} - Total: ${timings.total}ms | Page: ${timings.pageCreate}ms | Proxy: ${timings.proxySet}ms | Extract: ${timings.dataExtraction}ms | Process: ${timings.dataProcessing}ms | Broadcast: ${timings.webBroadcast}ms`);
-      } else {
-        const totalTime = Date.now();
-        const timings = {
-          pageCreate: pageCreateTime - startTime,
-          proxySet: proxySetTime - pageCreateTime,
-          dataExtraction: dataExtractionTime - proxySetTime,
-          total: totalTime - startTime
-        };
-
-        console.log(`📭 [${proxy.region}] No API data found for ${url} - Total: ${timings.total}ms | Page: ${timings.pageCreate}ms | Proxy: ${timings.proxySet}ms | Extract: ${timings.dataExtraction}ms`);
-
-        // Take screenshot for debugging
-        try {
-          const urlId = this.extractIdFromUrl(url);
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const screenshotPath = `debug-${urlId}-${timestamp}.png`;
-          
-          await page.screenshot({ 
-            path: screenshotPath, 
-            fullPage: true,
-            type: 'png'
-          });
-          
-          console.log(`📸 [${proxy.region}] Screenshot saved: ${screenshotPath}`);
-        } catch (screenshotError) {
-          console.error(`❌ [${proxy.region}] Failed to save screenshot: ${screenshotError.message}`);
-        }
-      }
-      
-    } catch (error) {
-      const errorTime = Date.now();
-      const timings = {
-        total: errorTime - startTime
       };
-      console.error(`❌ [${proxy.region}] Error processing ${url} after ${timings.total}ms:`, error.message);
-      
-      // Clear loading state on error
-      if (this.webServer) {
-        this.webServer.broadcastLoadingComplete(url);
-      }
-    } finally {
-      await page.close();
-      // Free the proxy for next use
-      this.setProxyFree(proxy);
-    }
-  }
 
-  // NEW METHOD: Ensure all free proxies get work
-  saturateAvailableProxies() {
-    if (!this.isRunning) return;
-    
-    let startedCount = 0;
-    
-    // Keep starting URLs until no more free proxies or no more URLs
-    while (true) {
-      const freeProxy = this.getFreeProxy();
-      if (!freeProxy) {
-        // No free proxies available
-        break;
-      }
-      
-      const nextUrl = this.getNextUrl();
-      if (!nextUrl) {
-        console.log('⚠️ No URLs available to process');
-        break;
-      }
-      
-      // Start processing immediately
-      this.processUrl(nextUrl, freeProxy).catch(error => {
-        console.error(`❌ Failed to process ${nextUrl}:`, error.message);
-        // Make sure to free the proxy on error and try to saturate again
-        this.setProxyFree(freeProxy);
+      page.on('response', responseHandler);
+
+      page.goto(url, { waitUntil: 'networkidle2' }).catch(() => {
+        clearTimeout(timeout);
+        page.off('response', responseHandler);
+        resolve(null);
       });
-      
-      startedCount++;
+    });
+  }
+
+  async processStockData(extractedData, url, proxyRegion) {
+    if (!extractedData?.data?.box_list) return;
+
+    const spuExtId = extractedData.data.spu_ext_id;
+    const boxList = extractedData.data.box_list;
+
+    // Update priority based on current data
+    this.updateUrlPriority(url, extractedData);
+
+    // Extract states (positions 1-6 -> indices 0-5)
+    const states = new Array(6).fill('');
+    let hasStock = false;
+
+    boxList.forEach((box) => {
+      if (box.position >= 1 && box.position <= 6) {
+        states[box.position - 1] = box.state.toString();
+        if (box.box_no && box.box_no.trim() !== '') {
+          hasStock = true;
+        }
+      }
+    });
+
+    const stockEntry = {
+      url,
+      state0: states[0] || '',
+      state1: states[1] || '',
+      state2: states[2] || '',
+      state3: states[3] || '',
+      state4: states[4] || '',
+      state5: states[5] || '',
+      stock: hasStock ? 'true' : 'false',
+      lastChecked: new Date().toISOString(),
+    };
+
+    // Load existing data if needed
+    if (!this.stockData.has(spuExtId)) {
+      await this.loadExistingTsvData(spuExtId);
     }
-    
-    if (startedCount > 0) {
-      console.log(`🚀 Started ${startedCount} new URL(s) on freed proxies`);
+
+    // Check for changes and update
+    const urlMap = this.stockData.get(spuExtId);
+    const existingEntry = urlMap.get(url);
+    const dataChanged = this.hasDataChanged(existingEntry, stockEntry);
+
+    if (dataChanged) {
+      urlMap.set(url, stockEntry);
+      await this.updateTsvFile(spuExtId);
+      console.log(`💾 [${proxyRegion}] Updated: ${url} [${states.join(' ')}] stock:${hasStock}`);
+    } else {
+      console.log(`✅ [${proxyRegion}] No change: ${url} [${states.join(' ')}] stock:${hasStock}`);
+    }
+
+    // Broadcast to web clients
+    if (this.webServer) {
+      this.webServer.broadcastUpdate(spuExtId, url, stockEntry);
     }
   }
 
-  async startContinuousMonitoring() {
-    console.log('🔄 Starting continuous monitoring...');
-    this.isRunning = true;
-    
-    // Initial saturation: fill all proxies with work
-    console.log('🚀 Initial proxy saturation...');
-    this.saturateAvailableProxies();
+  hasDataChanged(existingEntry, newEntry) {
+    if (!existingEntry) return true;
 
-    // Keep running until manually stopped
-    while (this.isRunning) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // OPTIONAL: Periodic saturation check (safety net)
-      // This ensures saturation even if some edge case causes proxies to not get work
-      this.saturateAvailableProxies();
+    const oldStates = [
+      existingEntry.state0,
+      existingEntry.state1,
+      existingEntry.state2,
+      existingEntry.state3,
+      existingEntry.state4,
+      existingEntry.state5,
+    ].join(' ');
+    const newStates = [
+      newEntry.state0,
+      newEntry.state1,
+      newEntry.state2,
+      newEntry.state3,
+      newEntry.state4,
+      newEntry.state5,
+    ].join(' ');
+
+    return oldStates !== newStates || existingEntry.stock !== newEntry.stock;
+  }
+
+  async takeDebugScreenshot(page, url, proxyRegion) {
+    try {
+      const urlId = this.extractIdFromUrl(url);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const screenshotPath = `debug-${urlId}-${timestamp}.png`;
+
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      console.log(`📸 [${proxyRegion}] Screenshot: ${screenshotPath}`);
+    } catch (error) {
+      console.error(`❌ Screenshot failed:`, error.message);
     }
   }
 
   extractIdFromUrl(url) {
-    // Extract meaningful ID from URL for filenames
-    // Example: https://www.popmart.com/us/pop-now/set/195-10002154800585 -> 195-10002154800585
     const match = url.match(/(\d+-\d+)$/);
     return match ? match[1] : 'unknown';
   }
 
+  // ===== MAIN MONITORING LOOP =====
+
+  async startContinuousMonitoring() {
+    console.log('🔄 Starting continuous monitoring...');
+    this.isRunning = true;
+
+    // Status monitoring
+    const statusInterval = setInterval(() => {
+      if (this.isRunning) {
+        const activeWorkers = this.workers.filter(w => w.isRunning).length;
+        const queueStatus = this.priorityQueue.getStatus();
+        
+        let statusMessage = `📊 Workers: ${activeWorkers}/${this.workers.length} active | Round-robin: cycle ${queueStatus.cycle}, position ${queueStatus.currentPosition}/${queueStatus.totalUrls}`;
+        
+        if (Object.keys(queueStatus.priorityStats).length > 0) {
+          const priorityInfo = Object.entries(queueStatus.priorityStats)
+            .map(([level, count]) => `${level}: ${count}`)
+            .join(', ');
+          statusMessage += ` | Priority: ${priorityInfo}`;
+        }
+        
+        console.log(statusMessage);
+      }
+    }, 3000);
+
+    // Start all workers
+    const workerPromises = this.workers.map(worker => worker.start());
+
+    // Wait for all workers to complete (they run indefinitely until stopped)
+    await Promise.all(workerPromises);
+
+    clearInterval(statusInterval);
+  }
+
+  // ===== SHUTDOWN =====
+
   async stop() {
-    console.log('\n🛑 Stopping continuous monitoring...');
+    console.log('\n🛑 Stopping monitoring...');
     this.isRunning = false;
-    
-    if (this.proxyMonitor) {
-      clearInterval(this.proxyMonitor);
-    }
-    
+
+    // Stop all workers
+    await Promise.all(this.workers.map(worker => worker.stop()));
+
     if (this.webServer) {
       this.webServer.stop();
     }
@@ -493,65 +735,78 @@ class StockBot {
 
   async cleanup() {
     console.log('🧹 Cleaning up...');
-    
+
     if (this.browser) {
       await this.browser.close();
     }
-    
-    if (this.webServer) {
-      this.webServer.stop();
-    }
-    
+
     console.log('✅ Cleanup complete');
   }
 }
 
+// ===== MAIN EXECUTION =====
+
 async function main() {
   const args = process.argv.slice(2);
-  
-  if (args.length !== 2) {
-    console.error('❌ Usage: node stockbot.js <base_url> <count>');
+
+  if (args.length < 2 || args.length % 2 !== 0) {
+    console.error('❌ Usage: node stockbot.js <base_url1> <count1> [<base_url2> <count2> ...]');
     console.error('Example: node stockbot.js https://www.popmart.com/us/pop-now/set/195-10002154800585 50');
+    console.error('Example: node stockbot.js https://www.popmart.com/us/pop-now/set/50-10009450600350 50 https://www.popmart.com/us/pop-now/set/195-10002025000585 50');
     process.exit(1);
   }
 
-  const [baseUrl, countStr] = args;
-  const count = parseInt(countStr);
-  
-  if (isNaN(count) || count <= 0) {
-    console.error('❌ Count must be a positive number');
-    process.exit(1);
+  // Parse URL/count pairs
+  const productSpecs = [];
+  for (let i = 0; i < args.length; i += 2) {
+    const baseUrl = args[i];
+    const count = parseInt(args[i + 1]);
+
+    if (isNaN(count) || count <= 0) {
+      console.error(`❌ Count must be a positive number: ${args[i + 1]}`);
+      process.exit(1);
+    }
+
+    productSpecs.push({ baseUrl, count });
   }
+
+  console.log(`🎯 Processing ${productSpecs.length} product(s):`);
+  productSpecs.forEach((spec, index) => {
+    console.log(`  ${index + 1}. ${spec.baseUrl} (${spec.count} URLs)`);
+  });
 
   const stockBot = new StockBot();
-  
-  // Handle graceful shutdown
+
+  // Graceful shutdown
   process.on('SIGINT', async () => {
     await stockBot.stop();
     await stockBot.cleanup();
     process.exit(0);
   });
-  
+
   try {
     await stockBot.init();
-    
-    stockBot.urls = stockBot.generateUrls(baseUrl, count);
-    
-    // Load existing data for all unique prefixes
-    const prefixes = new Set();
-    stockBot.urls.forEach(url => {
-      const match = url.match(/(\d+)-1000\d+/);
-      if (match) {
-        prefixes.add(parseInt(match[1]));
-      }
+
+    // Setup products and generate interleaved URLs
+    stockBot.setupProducts(productSpecs);
+
+    // Load existing data for all products
+    const uniqueSpuExtIds = new Set();
+    stockBot.products.forEach(product => {
+      uniqueSpuExtIds.add(product.spuExtId);
     });
-    
-    for (const prefix of prefixes) {
-      await stockBot.loadExistingTsvData(prefix);
+
+    for (const spuExtId of uniqueSpuExtIds) {
+      await stockBot.loadExistingTsvData(spuExtId);
     }
-    
+
+    // Calculate total URL count for worker initialization
+    const totalUrlCount = productSpecs.reduce((sum, spec) => sum + spec.count, 0);
+
+    // Initialize workers based on total URL count and proxy count
+    await stockBot.initializeWorkers(totalUrlCount);
+
     await stockBot.startContinuousMonitoring();
-    
   } catch (error) {
     console.error('❌ Fatal error:', error.message);
     process.exit(1);
@@ -559,11 +814,6 @@ async function main() {
     await stockBot.cleanup();
   }
 }
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught exception:', error);
-  process.exit(1);
-});
 
 if (require.main === module) {
   main();

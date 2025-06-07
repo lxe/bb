@@ -135,6 +135,16 @@
             color: #666;
         }
 
+        .section-base-url {
+            color: #94a3b8;
+            font-size: 9px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .sets-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -148,6 +158,7 @@
             padding: 6px;
             position: relative;
             transition: border-color 0.2s ease;
+            text-decoration: none;
         }
 
         .set-card:hover {
@@ -171,12 +182,36 @@
             background: #fefbf3;
         }
 
+        .set-card.unseen {
+            border-left: 2px solid #e2e8f0;
+            background: #f8fafc;
+            opacity: 0.7;
+        }
+
+        .set-card.unseen .set-url {
+            color: #94a3b8;
+        }
+
+        .set-card.unseen .state-dot {
+            background: #e2e8f0 !important;
+        }
+
+        .set-card.unseen .stock-indicator {
+            background: #e2e8f0;
+        }
+
         .set-card.updated-set {
             animation: setUpdate 5s ease-out;
         }
 
         .set-card.state-changed {
             animation: stateChange 10s ease-out;
+        }
+
+        .set-card.has-stock {
+            border: 2px solid #22c55e;
+            background: #f0fdf4;
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
         }
 
         @keyframes setUpdate {
@@ -224,12 +259,15 @@
         }
 
         .state-0 { background: #22c55e; }
-        .state-1 { background: #f59e0b; }
-        .state-2 { background: #ef4444; }
+        .state-1 { background: #94a3b8; }
+        .state-2 { background: #f59e0b; }
         .state-empty { background: #f1f5f9; }
 
         /* Override state colors when product is out of stock */
-        .set-card.out-of-stock .state-0,
+        .set-card.out-of-stock .state-0 {
+            background: #e2e8f0; /* Even lighter grey for empty slots when out of stock */
+        }
+        
         .set-card.out-of-stock .state-1,
         .set-card.out-of-stock .state-2 {
             background: #94a3b8;
@@ -272,7 +310,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(255, 255, 255, 0.8);
+            background: rgba(255, 255, 255, 0.4);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -461,24 +499,26 @@
             hideLoadingState(url);
             
             if (!stockData[spuExtId]) {
-                stockData[spuExtId] = [];
+                stockData[spuExtId] = { urls: [] };
             }
             
-            const existingIndex = stockData[spuExtId].findIndex(item => item.url === url);
+            // Handle both old format (array) and new format (object with urls property)
+            const urls = Array.isArray(stockData[spuExtId]) ? stockData[spuExtId] : stockData[spuExtId].urls;
+            const existingIndex = urls.findIndex(item => item.url === url);
             let hasChanges = false;
             let isStateChange = false;
             const now = Date.now();
             
             if (existingIndex >= 0) {
-                const existing = stockData[spuExtId][existingIndex];
+                const existing = urls[existingIndex];
                 const statesChanged = !existing.states.every((state, i) => state === data.states[i]);
                 const stockChanged = existing.stock !== data.stock;
                 hasChanges = statesChanged || stockChanged;
                 isStateChange = hasChanges;
                 
-                stockData[spuExtId][existingIndex] = { ...data, _justUpdated: true, _stateChanged: isStateChange, _lastUpdateTime: now };
+                urls[existingIndex] = { ...data, _justUpdated: true, _stateChanged: isStateChange, _lastUpdateTime: now, status: 'seen' };
             } else {
-                stockData[spuExtId].push({ ...data, _justUpdated: true, _stateChanged: true, _lastUpdateTime: now });
+                urls.push({ ...data, _justUpdated: true, _stateChanged: true, _lastUpdateTime: now, status: 'seen' });
                 hasChanges = true;
                 isStateChange = true;
             }
@@ -494,7 +534,8 @@
             
             setTimeout(() => {
                 if (stockData[spuExtId]) {
-                    const item = stockData[spuExtId].find(item => item.url === url);
+                    const urls = Array.isArray(stockData[spuExtId]) ? stockData[spuExtId] : stockData[spuExtId].urls;
+                    const item = urls.find(item => item.url === url);
                     if (item) {
                         item._justUpdated = false;
                     }
@@ -503,7 +544,8 @@
             
             setTimeout(() => {
                 if (stockData[spuExtId]) {
-                    const item = stockData[spuExtId].find(item => item.url === url);
+                    const urls = Array.isArray(stockData[spuExtId]) ? stockData[spuExtId] : stockData[spuExtId].urls;
+                    const item = urls.find(item => item.url === url);
                     if (item) {
                         item._stateChanged = false;
                     }
@@ -531,13 +573,16 @@
             
             // Set initial timestamps for existing data
             const now = Date.now();
-            for (const [spuExtId, urls] of Object.entries(stockData)) {
+            for (const [spuExtId, productData] of Object.entries(stockData)) {
+                // Handle both old format (array) and new format (object with urls property)
+                const urls = Array.isArray(productData) ? productData : productData.urls;
+                
                 urls.forEach(item => {
                     if (!item._lastUpdateTime) {
                         item._lastUpdateTime = now;
                     }
                 });
-                createProductSection(spuExtId, urls);
+                createProductSection(spuExtId, urls, productData);
             }
             
             if (!lastMainUpdate) {
@@ -548,17 +593,24 @@
             startUpdateCounters();
         }
 
-        function createProductSection(spuExtId, urls) {
+        function createProductSection(spuExtId, urls, productData = null) {
             const container = document.getElementById('products-container');
             
             const section = document.createElement('div');
             section.className = 'section';
             section.id = `product-${spuExtId}`;
             
+            // Get additional info from productData if available
+            const baseUrl = productData && productData.baseUrl ? productData.baseUrl : '';
+            const totalUrls = productData && productData.totalUrls ? productData.totalUrls : urls.length;
+            const seenCount = urls.filter(item => item.status === 'seen').length;
+            const unseenCount = urls.filter(item => item.status === 'unseen').length;
+            
             section.innerHTML = `
                 <div class="section-header">
                     <div class="section-title">Product ${spuExtId}</div>
-                    <div class="section-count">${urls.length} URLs</div>
+                    <div class="section-count">${totalUrls} URLs (${seenCount} seen, ${unseenCount} unseen)</div>
+                    ${baseUrl ? `<a href="${baseUrl}" target="_blank" class="section-base-url" title="${baseUrl}">${baseUrl}</a>` : ''}
                 </div>
                 <div class="sets-grid" id="grid-${spuExtId}">
                 </div>
@@ -572,7 +624,9 @@
             const grid = document.getElementById(`grid-${spuExtId}`);
             if (!grid) return;
             
-            let urls = stockData[spuExtId] || [];
+            // Handle both old format (array) and new format (object with urls property)
+            const productData = stockData[spuExtId] || [];
+            let urls = Array.isArray(productData) ? productData : (productData.urls || []);
             
             // Add loading URLs that aren't in stockData yet as placeholders
             const loadingUrlsForProduct = Array.from(activeLoadingStates.keys()).filter(url => {
@@ -645,6 +699,18 @@
                     cardClass = item._isPlaceholder ? 'loading' : 'failed';
                 }
                 
+                // Add unseen class for URLs that have never been processed
+                if (item.status === 'unseen') {
+                    cardClass += ' unseen';
+                }
+                
+                // Add has-stock class only for items that have stock AND have green squares (state 0)
+                // State 0 when stock is true means "available/in-stock"
+                // State 0 when stock is false means "empty/not available"
+                if (item.stock === true && item.states.includes('0')) {
+                    cardClass += ' has-stock';
+                }
+                
                 let animationClass = '';
                 if (item._stateChanged) {
                     animationClass = 'state-changed';
@@ -655,9 +721,14 @@
                 // Create state dots in rows of 6
                 const stateDots = [];
                 for (let i = 0; i < item.states.length; i += 6) {
-                    const rowDots = item.states.slice(i, i + 6).map((state, j) => 
-                        `<div class="state-dot ${state !== '' ? `state-${state}` : 'state-empty'}"></div>`
-                    ).join('');
+                    const rowDots = item.states.slice(i, i + 6).map((state, j) => {
+                        if (state === '') {
+                            return `<div class="state-dot state-empty"></div>`;
+                        } else {
+                            // The CSS will handle the color override for out-of-stock items
+                            return `<div class="state-dot state-${state}"></div>`;
+                        }
+                    }).join('');
                     stateDots.push(`<div class="states-row">${rowDots}</div>`);
                 }
                 
@@ -690,7 +761,10 @@
         }
 
         function updateStats() {
-            const totalUrls = Object.values(stockData).reduce((sum, urls) => sum + urls.length, 0);
+            const totalUrls = Object.values(stockData).reduce((sum, productData) => {
+                const urls = Array.isArray(productData) ? productData : (productData.urls || []);
+                return sum + urls.length;
+            }, 0);
             const totalProducts = Object.keys(stockData).length;
             const secondsAgo = lastMainUpdate ? Math.floor((Date.now() - lastMainUpdate) / 1000) : 0;
             const lastUpdate = lastMainUpdate ? `${secondsAgo}s ago` : 'Never';
@@ -802,7 +876,9 @@
             const inStockUrls = [];
             
             // Scan through all stock data to find in-stock items
-            for (const [spuExtId, urls] of Object.entries(stockData)) {
+            for (const [spuExtId, productData] of Object.entries(stockData)) {
+                // Handle both old format (array) and new format (object with urls property)
+                const urls = Array.isArray(productData) ? productData : (productData.urls || []);
                 urls.forEach(item => {
                     if (item.stock === true) {
                         inStockUrls.push(item.url);
@@ -855,7 +931,9 @@
                 updateStats();
                 
                 // Update individual set counters
-                for (const [spuExtId, urls] of Object.entries(stockData)) {
+                for (const [spuExtId, productData] of Object.entries(stockData)) {
+                    // Handle both old format (array) and new format (object with urls property)
+                    const urls = Array.isArray(productData) ? productData : (productData.urls || []);
                     const grid = document.getElementById(`grid-${spuExtId}`);
                     if (grid) {
                         const cards = grid.querySelectorAll('.set-card');
