@@ -1,0 +1,49 @@
+{
+  "name": "stockbot",
+  "version": "1.0.0",
+  "description": "A web scraping bot that uses Puppeteer with SOCKS5 proxies to extract data from Popmart product pages",
+  "main": "stockbot.js",
+  "scripts": {
+    "start": "node stockbot.js",
+    "test": "node test-proxy-manager.js",
+    "test:proxy": "node test-proxy-manager.js",
+    "test:proxy:teardown": "node test-proxy-manager.js --teardown",
+    "test:separation": "node test-separation.js",
+    "test:connectivity": "node test-connectivity.js",
+    "test:fargate": "node test-fargate.js",
+    "dev": "node stockbot.js",
+    "proxy": "node proxy-cli.js"
+  },
+  "bin": {
+    "proxy-cli": "./proxy-cli.js"
+  },
+  "keywords": [
+    "web-scraping",
+    "puppeteer",
+    "proxy",
+    "socks5",
+    "popmart",
+    "automation"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.826.0",
+    "@aws-sdk/client-ec2": "^3.826.0",
+    "@aws-sdk/client-ecs": "^3.826.0",
+    "@aws-sdk/client-iam": "^3.826.0",
+    "@lem0-packages/puppeteer-page-proxy": "^1.4.1",
+    "axios": "^1.9.0",
+    "commander": "^14.0.0",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.10.0",
+    "puppeteer-proxy": "^1.0.3",
+    "socks-proxy-agent": "^8.0.5",
+    "socks5server": "^4.5.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Stock Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #fafafa;
+            color: #1a1a1a;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 2000px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e5e5e5;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .copy-button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 11px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .copy-button:hover {
+            background: #2563eb;
+        }
+
+        .copy-button:active {
+            background: #1d4ed8;
+        }
+
+        .copy-button.success {
+            background: #22c55e;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #666;
+        }
+
+        .status-indicator {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #22c55e;
+        }
+
+        .status-indicator.disconnected {
+            background: #ef4444;
+        }
+
+        .stats {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 20px;
+            font-size: 11px;
+        }
+
+        .stat {
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+        }
+
+        .stat-number {
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .stat-label {
+            color: #666;
+        }
+
+        .section {
+            margin-bottom: 24px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .section-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+
+        .section-count {
+            font-size: 10px;
+            color: #666;
+        }
+
+        .sets-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 6px;
+        }
+
+        .set-card {
+            background: white;
+            border: 1px solid #e5e5e5;
+            border-radius: 4px;
+            padding: 6px;
+            position: relative;
+            transition: border-color 0.2s ease;
+        }
+
+        .set-card:hover {
+            border-color: #d1d5db;
+        }
+
+        .set-card.in-stock {
+            border-left: 2px solid #22c55e;
+        }
+
+        .set-card.out-of-stock {
+            border-left: 2px solid #94a3b8;
+        }
+
+        .set-card.failed {
+            border-left: 2px solid #ef4444;
+        }
+
+        .set-card.loading {
+            border-left: 2px solid #f59e0b;
+            background: #fefbf3;
+        }
+
+        .set-card.updated-set {
+            animation: setUpdate 5s ease-out;
+        }
+
+        .set-card.state-changed {
+            animation: stateChange 10s ease-out;
+        }
+
+        @keyframes setUpdate {
+            0% { background: #f9f2bf; }
+            100% { background: white; }
+        }
+
+        @keyframes stateChange {
+            0% { 
+                border-left-color: #22c55e;
+                background: #f0fdf4;
+            }
+            100% { 
+                background: white;
+            }
+        }
+
+        .set-url {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 9px;
+            color: #1a1a1a;
+            text-decoration: none;
+            display: block;
+            margin-bottom: 4px;
+            /* overflow: hidden; */
+            /* text-overflow: ellipsis; */
+            white-space: nowrap;
+        }
+
+        .set-url:hover {
+            color: #3b82f6;
+        }
+
+        .states-row {
+            display: flex;
+            gap: 1px;
+            margin-bottom: 4px;
+        }
+
+        .state-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            flex-shrink: 0;
+        }
+
+        .state-0 { background: #22c55e; }
+        .state-1 { background: #f59e0b; }
+        .state-2 { background: #ef4444; }
+        .state-empty { background: #f1f5f9; }
+
+        /* Override state colors when product is out of stock */
+        .set-card.out-of-stock .state-0,
+        .set-card.out-of-stock .state-1,
+        .set-card.out-of-stock .state-2 {
+            background: #94a3b8;
+        }
+
+        .set-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 9px;
+        }
+
+        .stock-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .stock-yes { background: #22c55e; }
+        .stock-no { background: #ef4444; }
+        .stock-unknown { background: #94a3b8; }
+
+        .last-checked {
+            color: #94a3b8;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        .set-id {
+            position: absolute;
+            top: 2px;
+            right: 4px;
+            font-size: 8px;
+            color: #cbd5e1;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+        }
+
+        .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .updated-product {
+            animation: productUpdate 2s ease-out;
+        }
+
+        @keyframes productUpdate {
+            0% { background: #f8fafc; }
+            100% { background: transparent; }
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+
+        .footer {
+            text-align: center;
+            color: #94a3b8;
+            margin-top: 32px;
+            font-size: 10px;
+            padding-top: 16px;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 12px;
+            }
+            
+            .sets-grid {
+                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+                gap: 4px;
+            }
+
+            .set-card {
+                padding: 4px;
+            }
+
+            .state-dot {
+                width: 6px;
+                height: 6px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="status">
+                <div class="status-indicator" id="connection-status"></div>
+                <span id="connection-text">Live monitoring</span>
+            </div>
+            <div class="header-actions">
+                <button class="copy-button" id="copy-in-stock-btn" onclick="copyInStockUrls()">
+                    📋 Copy In-Stock URLs
+                </button>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <span class="stat-number" id="total-urls">0</span>
+                <span class="stat-label">URLs</span>
+            </div>
+            <div class="stat">
+                <span class="stat-number" id="total-products">0</span>
+                <span class="stat-label">Products</span>
+            </div>
+            <div class="stat">
+                <span class="stat-number" id="last-update">Never</span>
+                <span class="stat-label">Last update</span>
+            </div>
+            <div class="stat">
+                <span class="stat-number" id="loading-count">0</span>
+                <span class="stat-label">Loading</span>
+            </div>
+        </div>
+
+        <div id="products-container">
+            <!-- Product sections will be dynamically generated here -->
+        </div>
+
+        <div class="footer">
+            <p>Real-time monitoring • Server-sent events</p>
+        </div>
+    </div>
+
+    <script>
+        let stockData = {};
+        let eventSource;
+        let reconnectTimeout;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 10;
+        let lastMainUpdate = null;
+        let updateInterval;
+        let activeLoadingStates = new Map(); // Track URLs currently showing spinners: url -> startTime
+
+        function initializeSSE() {
+            const connectionStatus = document.getElementById('connection-status');
+            const connectionText = document.getElementById('connection-text');
+            
+            eventSource = new EventSource('/events');
+            
+            eventSource.onopen = function() {
+                console.log('SSE connection opened');
+                connectionStatus.classList.remove('disconnected');
+                connectionText.textContent = 'Live monitoring';
+                reconnectAttempts = 0;
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleSSEMessage(message);
+                } catch (error) {
+                    console.error('Error parsing SSE message:', error);
+                }
+            };
+
+            eventSource.onerror = function(event) {
+                console.error('SSE connection error:', event);
+                connectionStatus.classList.add('disconnected');
+                connectionText.textContent = 'Reconnecting...';
+                
+                eventSource.close();
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                    
+                    reconnectTimeout = setTimeout(() => {
+                        initializeSSE();
+                    }, delay);
+                } else {
+                    connectionText.textContent = 'Connection failed';
+                }
+            };
+        }
+
+        function handleSSEMessage(message) {
+            switch (message.type) {
+                case 'initial':
+                    stockData = message.data;
+                    renderAllData();
+                    break;
+                case 'update':
+                    updateStockData(message.spuExtId, message.url, message.data);
+                    updateStats();
+                    break;
+                case 'loading':
+                    console.log('📡 Received loading message:', message);
+                    showLoadingState(message.url, message.region);
+                    break;
+                case 'loading_complete':
+                    console.log('📡 Received loading_complete message:', message);
+                    hideLoadingState(message.url);
+                    break;
+                default:
+                    console.warn('Unknown SSE message type:', message.type);
+            }
+        }
+
+        function updateStockData(spuExtId, url, data) {
+            // Hide loading state immediately when update is received
+            hideLoadingState(url);
+            
+            if (!stockData[spuExtId]) {
+                stockData[spuExtId] = [];
+            }
+            
+            const existingIndex = stockData[spuExtId].findIndex(item => item.url === url);
+            let hasChanges = false;
+            let isStateChange = false;
+            const now = Date.now();
+            
+            if (existingIndex >= 0) {
+                const existing = stockData[spuExtId][existingIndex];
+                const statesChanged = !existing.states.every((state, i) => state === data.states[i]);
+                const stockChanged = existing.stock !== data.stock;
+                hasChanges = statesChanged || stockChanged;
+                isStateChange = hasChanges;
+                
+                stockData[spuExtId][existingIndex] = { ...data, _justUpdated: true, _stateChanged: isStateChange, _lastUpdateTime: now };
+            } else {
+                stockData[spuExtId].push({ ...data, _justUpdated: true, _stateChanged: true, _lastUpdateTime: now });
+                hasChanges = true;
+                isStateChange = true;
+            }
+            
+            // Update main update timestamp
+            lastMainUpdate = now;
+            
+            updateProductGrid(spuExtId);
+            
+            if (hasChanges) {
+                highlightProductSection(spuExtId);
+            }
+            
+            setTimeout(() => {
+                if (stockData[spuExtId]) {
+                    const item = stockData[spuExtId].find(item => item.url === url);
+                    if (item) {
+                        item._justUpdated = false;
+                    }
+                }
+            }, 1500);
+            
+            setTimeout(() => {
+                if (stockData[spuExtId]) {
+                    const item = stockData[spuExtId].find(item => item.url === url);
+                    if (item) {
+                        item._stateChanged = false;
+                    }
+                }
+            }, 2000);
+        }
+
+        function highlightProductSection(spuExtId) {
+            const productSection = document.getElementById(`product-${spuExtId}`);
+            
+            if (productSection) {
+                productSection.classList.remove('updated-product');
+                productSection.offsetHeight;
+                productSection.classList.add('updated-product');
+                
+                setTimeout(() => {
+                    productSection.classList.remove('updated-product');
+                }, 2000);
+            }
+        }
+
+        function renderAllData() {
+            const container = document.getElementById('products-container');
+            container.innerHTML = '';
+            
+            // Set initial timestamps for existing data
+            const now = Date.now();
+            for (const [spuExtId, urls] of Object.entries(stockData)) {
+                urls.forEach(item => {
+                    if (!item._lastUpdateTime) {
+                        item._lastUpdateTime = now;
+                    }
+                });
+                createProductSection(spuExtId, urls);
+            }
+            
+            if (!lastMainUpdate) {
+                lastMainUpdate = now;
+            }
+            
+            updateStats();
+            startUpdateCounters();
+        }
+
+        function createProductSection(spuExtId, urls) {
+            const container = document.getElementById('products-container');
+            
+            const section = document.createElement('div');
+            section.className = 'section';
+            section.id = `product-${spuExtId}`;
+            
+            section.innerHTML = `
+                <div class="section-header">
+                    <div class="section-title">Product ${spuExtId}</div>
+                    <div class="section-count">${urls.length} URLs</div>
+                </div>
+                <div class="sets-grid" id="grid-${spuExtId}">
+                </div>
+            `;
+            
+            container.appendChild(section);
+            updateProductGrid(spuExtId);
+        }
+
+        function updateProductGrid(spuExtId) {
+            const grid = document.getElementById(`grid-${spuExtId}`);
+            if (!grid) return;
+            
+            let urls = stockData[spuExtId] || [];
+            
+            // Add loading URLs that aren't in stockData yet as placeholders
+            const loadingUrlsForProduct = Array.from(activeLoadingStates.keys()).filter(url => {
+                // Extract spuExtId from URL (e.g., 195 from https://...set/195-10002154800585)
+                const match = url.match(/\/set\/(\d+)-/);
+                const urlSpuId = match ? match[1] : null;
+                console.log(`🔍 Checking URL ${url}: extracted spuId=${urlSpuId}, target spuExtId=${spuExtId}`);
+                return match && match[1] === spuExtId.toString();
+            });
+            
+            console.log(`🔍 Product ${spuExtId}: found ${loadingUrlsForProduct.length} loading URLs:`, loadingUrlsForProduct);
+            
+            // Create placeholder entries for loading URLs not yet in stockData
+            const existingUrls = new Set(urls.map(item => item.url));
+            const placeholderUrls = loadingUrlsForProduct
+                .filter(url => !existingUrls.has(url))
+                .map(url => ({
+                    url: url,
+                    states: [1, 1, 1, 1, 1, 1], // Placeholder states
+                    stock: null, // Unknown stock status
+                    lastChecked: null,
+                    _isPlaceholder: true
+                }));
+            
+            console.log(`🔍 Product ${spuExtId}: creating ${placeholderUrls.length} placeholders`);
+            
+            // Combine real data with placeholders
+            urls = [...urls, ...placeholderUrls];
+            
+            // Store which URLs are currently loading before rebuilding
+            const currentlyLoadingUrls = new Set();
+            grid.querySelectorAll('.set-card').forEach(card => {
+                const url = card.getAttribute('data-url');
+                if (card.querySelector('.loading-overlay') && url) {
+                    currentlyLoadingUrls.add(url);
+                }
+            });
+            
+            grid.innerHTML = urls.map(item => {
+                const urlId = item.url.split('/').pop() || 'unknown';
+                const urlShort = urlId.length > 20 ? urlId.substring(0, 20) + '…' : urlId;
+                
+                // Check if this URL is currently loading
+                const isLoading = activeLoadingStates.has(item.url);
+                let lastChecked, timeIcon;
+                
+                if (isLoading) {
+                    const loadingStartTime = activeLoadingStates.get(item.url);
+                    const loadingSeconds = Math.floor((Date.now() - loadingStartTime) / 1000);
+                    lastChecked = `${loadingSeconds}s`;
+                    timeIcon = '⏳'; // Loading icon
+                } else if (item._isPlaceholder) {
+                    lastChecked = 'Loading...';
+                    timeIcon = '⏳'; // Loading icon for placeholders
+                } else {
+                    const secondsAgo = item._lastUpdateTime ? Math.floor((Date.now() - item._lastUpdateTime) / 1000) : 0;
+                    lastChecked = `${secondsAgo}s`;
+                    timeIcon = '🕒'; // Regular time icon
+                }
+                
+                let stockClass, cardClass;
+                if (item.stock === true) {
+                    stockClass = 'stock-yes';
+                    cardClass = 'in-stock';
+                } else if (item.stock === false) {
+                    stockClass = 'stock-no';
+                    cardClass = 'out-of-stock';
+                } else {
+                    stockClass = 'stock-unknown';
+                    cardClass = item._isPlaceholder ? 'loading' : 'failed';
+                }
+                
+                let animationClass = '';
+                if (item._stateChanged) {
+                    animationClass = 'state-changed';
+                } else if (item._justUpdated) {
+                    animationClass = 'updated-set';
+                }
+                
+                // Create state dots in rows of 6
+                const stateDots = [];
+                for (let i = 0; i < item.states.length; i += 6) {
+                    const rowDots = item.states.slice(i, i + 6).map((state, j) => 
+                        `<div class="state-dot ${state !== '' ? `state-${state}` : 'state-empty'}"></div>`
+                    ).join('');
+                    stateDots.push(`<div class="states-row">${rowDots}</div>`);
+                }
+                
+                return `
+                    <a href="${item.url}" target="_blank" class="set-card ${cardClass} ${animationClass}" data-url="${item.url}">
+                        <div class="set-url" title="${item.url}">${urlShort}</div>
+                        ${stateDots.join('')}
+                        <div class="set-footer">
+                            <div class="stock-indicator ${stockClass}"></div>
+                            <div class="last-checked">${timeIcon} ${lastChecked}</div>
+                        </div>
+                    </a>
+                `;
+            }).join('');
+            
+                         // Restore loading states that were lost during rebuild
+             currentlyLoadingUrls.forEach(url => {
+                 if (activeLoadingStates.has(url)) {
+                     const card = grid.querySelector(`[data-url="${url}"]`);
+                     if (card && !card.querySelector('.loading-overlay')) {
+                         const overlay = document.createElement('div');
+                         overlay.className = 'loading-overlay';
+                         overlay.innerHTML = '<div class="spinner"></div>';
+                         card.style.position = 'relative';
+                         card.appendChild(overlay);
+                         console.log(`🔄 Restored loading state for: ${url}`);
+                     }
+                 }
+             });
+        }
+
+        function updateStats() {
+            const totalUrls = Object.values(stockData).reduce((sum, urls) => sum + urls.length, 0);
+            const totalProducts = Object.keys(stockData).length;
+            const secondsAgo = lastMainUpdate ? Math.floor((Date.now() - lastMainUpdate) / 1000) : 0;
+            const lastUpdate = lastMainUpdate ? `${secondsAgo}s ago` : 'Never';
+            
+            document.getElementById('total-urls').textContent = totalUrls;
+            document.getElementById('total-products').textContent = totalProducts;
+            document.getElementById('last-update').textContent = lastUpdate;
+        }
+
+        function showLoadingState(url, region) {
+            console.log(`🔍 showLoadingState called for: ${url} (${region})`);
+            
+            // Find the card for this URL
+            const card = document.querySelector(`[data-url="${url}"]`);
+            console.log(`🔍 Card found for ${url}:`, !!card);
+            
+            if (card) {
+                // Remove any existing loading overlay
+                const existingOverlay = card.querySelector('.loading-overlay');
+                if (existingOverlay) {
+                    existingOverlay.remove();
+                }
+                
+                // Add to active loading states with start time
+                activeLoadingStates.set(url, Date.now());
+                updateLoadingCount();
+                
+                // Add loading overlay
+                const overlay = document.createElement('div');
+                overlay.className = 'loading-overlay';
+                overlay.innerHTML = '<div class="spinner"></div>';
+                card.style.position = 'relative';
+                card.appendChild(overlay);
+                
+                console.log(`🔄 Loading: ${url} (${region}) - Total loading: ${activeLoadingStates.size}`);
+            } else {
+                console.warn(`⚠️ Card not found for URL: ${url} - creating placeholder`);
+                console.log(`🔍 Current activeLoadingStates:`, Array.from(activeLoadingStates.keys()));
+                
+                // Extract spuExtId from URL and create/update that product grid to show placeholder
+                const match = url.match(/\/set\/(\d+)-/);
+                console.log(`🔍 URL pattern match for ${url}:`, match);
+                
+                if (match) {
+                    const spuExtId = parseInt(match[1]);
+                    console.log(`🔍 Extracted spuExtId: ${spuExtId}`);
+                    
+                    // Create product section if it doesn't exist
+                    const existingSection = document.getElementById(`product-${spuExtId}`);
+                    console.log(`🔍 Existing section for product ${spuExtId}:`, !!existingSection);
+                    
+                    if (!existingSection) {
+                        console.log(`🔍 Creating new product section for ${spuExtId}`);
+                        createProductSection(spuExtId, []);
+                    }
+                    
+                    console.log(`🔍 Updating product grid for ${spuExtId}`);
+                    updateProductGrid(spuExtId);
+                }
+            }
+        }
+
+        function hideLoadingState(url) {
+            const card = document.querySelector(`[data-url="${url}"]`);
+            if (card) {
+                const overlay = card.querySelector('.loading-overlay');
+                if (overlay) {
+                    overlay.remove();
+                    // Remove from active loading states
+                    activeLoadingStates.delete(url);
+                    updateLoadingCount();
+                    console.log(`✅ Loading complete: ${url} - Total loading: ${activeLoadingStates.size}`);
+                }
+            }
+        }
+
+        function updateLoadingCount() {
+            document.getElementById('loading-count').textContent = activeLoadingStates.size;
+        }
+
+        // Debug function to check loading states
+        function debugLoadingStates() {
+            console.log('🔍 Active loading states:', Array.from(activeLoadingStates.keys()));
+            const visibleSpinners = document.querySelectorAll('.loading-overlay').length;
+            console.log('🔍 Visible spinners in DOM:', visibleSpinners);
+            const allCards = document.querySelectorAll('.set-card').length;
+            console.log('🔍 Total cards in DOM:', allCards);
+            
+            // Show loading durations
+            activeLoadingStates.forEach((startTime, url) => {
+                const duration = Math.floor((Date.now() - startTime) / 1000);
+                console.log(`🔍 ${url}: loading for ${duration}s`);
+            });
+        }
+
+        // Make debug function globally available
+        window.debugLoadingStates = debugLoadingStates;
+        
+        // Test function to manually create placeholder
+        function testPlaceholder() {
+            const testUrl = 'https://www.popmart.com/us/pop-now/set/195-10002154800585';
+            console.log('🧪 Testing placeholder creation for:', testUrl);
+            activeLoadingStates.set(testUrl, Date.now());
+            showLoadingState(testUrl, 'test-region');
+        }
+        window.testPlaceholder = testPlaceholder;
+
+        function copyInStockUrls() {
+            const inStockUrls = [];
+            
+            // Scan through all stock data to find in-stock items
+            for (const [spuExtId, urls] of Object.entries(stockData)) {
+                urls.forEach(item => {
+                    if (item.stock === true) {
+                        inStockUrls.push(item.url);
+                    }
+                });
+            }
+            
+            if (inStockUrls.length === 0) {
+                showCopyFeedback('No in-stock items found', 'warning');
+                return;
+            }
+            
+            // Sort URLs for consistent ordering
+            inStockUrls.sort();
+            
+            // Copy to clipboard
+            const urlText = inStockUrls.join('\n');
+            navigator.clipboard.writeText(urlText).then(() => {
+                showCopyFeedback(`Copied ${inStockUrls.length} in-stock URLs`, 'success');
+                console.log(`📋 Copied ${inStockUrls.length} in-stock URLs to clipboard`);
+            }).catch(err => {
+                console.error('Failed to copy to clipboard:', err);
+                showCopyFeedback('Copy failed', 'error');
+            });
+        }
+
+        function showCopyFeedback(message, type) {
+            const button = document.getElementById('copy-in-stock-btn');
+            const originalText = button.textContent;
+            
+            // Update button appearance
+            button.textContent = message;
+            button.classList.add(type === 'success' ? 'success' : 'error');
+            
+            // Reset after 2 seconds
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.classList.remove('success', 'error');
+            }, 2000);
+        }
+
+        function startUpdateCounters() {
+            // Clear existing interval if any
+            if (updateInterval) {
+                clearInterval(updateInterval);
+            }
+            
+            // Update counters every second
+            updateInterval = setInterval(() => {
+                updateStats();
+                
+                // Update individual set counters
+                for (const [spuExtId, urls] of Object.entries(stockData)) {
+                    const grid = document.getElementById(`grid-${spuExtId}`);
+                    if (grid) {
+                        const cards = grid.querySelectorAll('.set-card');
+                        cards.forEach((card, index) => {
+                            const item = urls[index];
+                            if (item) {
+                                const lastCheckedEl = card.querySelector('.last-checked');
+                                if (lastCheckedEl) {
+                                    const url = item.url;
+                                    const isLoading = activeLoadingStates.has(url);
+                                    
+                                    if (isLoading) {
+                                        // Show loading countup
+                                        const loadingStartTime = activeLoadingStates.get(url);
+                                        const loadingSeconds = Math.floor((Date.now() - loadingStartTime) / 1000);
+                                        lastCheckedEl.textContent = `⏳ ${loadingSeconds}s`;
+                                    } else if (item._lastUpdateTime) {
+                                        // Show regular countdown
+                                        const secondsAgo = Math.floor((Date.now() - item._lastUpdateTime) / 1000);
+                                        lastCheckedEl.textContent = `🕒 ${secondsAgo}s`;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }, 1000);
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', initializeSSE);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (eventSource) {
+                eventSource.close();
+            }
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
+            if (updateInterval) {
+                clearInterval(updateInterval);
+            }
+        });
+    </script>
+</body>
+</html>
